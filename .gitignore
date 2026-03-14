@@ -41,4 +41,3 @@ Thumbs.db
 .coverage
 htmlcov/
 *.log
-SECURITY.md
