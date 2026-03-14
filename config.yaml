@@ -1,0 +1,12 @@
+keywords:
+  - "artificial intelligence"
+  - "startup funding"
+
+sources:
+  - name: "TechCrunch"
+    url: "https://techcrunch.com/feed/"
+  - name: "Hacker News"
+    url: "https://hnrss.org/frontpage"
+  - name: "Google News — AI"
+    type: google_news
+    query: "artificial intelligence"
