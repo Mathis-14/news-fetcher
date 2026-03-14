@@ -7,12 +7,18 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from .api import fetch_news
+from .config_loader import load_config
 from .fetcher import Article, fetch_sources
-from .filter import dedupe_by_url, filter_already_seen, filter_by_keywords
+from .filter import (
+    dedupe_by_url,
+    filter_already_seen,
+    filter_already_seen_dicts,
+    filter_by_keywords,
+)
 from .url_safety import is_safe_article_url, is_safe_feed_url
 
 # Default paths (relative to cwd)
@@ -22,37 +28,6 @@ DEFAULT_OUTPUT_FILE = "news.json"
 DEFAULT_SEEN_FILE = ".seen_urls"
 
 console = Console()
-
-
-def load_config(config_path: Path) -> dict:
-    """
-    Load and validate config from a YAML file.
-    Returns dict with keys: keywords (list), sources (list of dicts).
-    """
-    if not config_path.exists():
-        console.print(f"[red]Config not found: {config_path}[/red]")
-        sys.exit(1)
-
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except OSError as e:
-        console.print(f"[red]Cannot read config {config_path}: {e}[/red]")
-        sys.exit(1)
-
-    if not data or not isinstance(data, dict):
-        return {"keywords": [], "sources": []}
-
-    keywords = data.get("keywords")
-    if not isinstance(keywords, list):
-        keywords = []
-
-    sources = data.get("sources")
-    if not isinstance(sources, list):
-        sources = []
-    sources = [s for s in sources if isinstance(s, dict)]
-
-    return {"keywords": keywords, "sources": sources}
 
 
 def _filter_safe_sources(raw_sources: list[dict]) -> list[dict]:
@@ -117,34 +92,27 @@ def _write_output(
     If overwrite: write only the given articles.
     Else: merge with existing file, dedupe by URL, then write.
     Returns total number of articles written.
+    Raises OSError on write failure.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if overwrite:
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(articles, f, indent=2, ensure_ascii=False)
-        except OSError as e:
-            console.print(f"[red]Cannot write output file {path}: {e}[/red]")
-            sys.exit(1)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(articles, f, indent=2, ensure_ascii=False)
         return len(articles)
 
     existing = _read_existing_articles(path)
     combined = existing + articles
     unique = _dedupe_articles_by_url(combined)
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(unique, f, indent=2, ensure_ascii=False)
-    except OSError as e:
-        console.print(f"[red]Cannot write output file {path}: {e}[/red]")
-        sys.exit(1)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(unique, f, indent=2, ensure_ascii=False)
     return len(unique)
 
 
 def _build_parser(cwd: Path) -> argparse.ArgumentParser:
-    """Build CLI argument parser with default paths from cwd."""
+    """Build CLI argument parser. Default output is relative to config file dir."""
     default_config = cwd / DEFAULT_CONFIG_NAME
-    default_output = cwd / DEFAULT_OUTPUT_DIR / DEFAULT_OUTPUT_FILE
+    default_output = default_config.parent / DEFAULT_OUTPUT_DIR / DEFAULT_OUTPUT_FILE
     parser = argparse.ArgumentParser(
         description="Zero-cost news fetcher for RSS and Google News",
     )
@@ -165,11 +133,16 @@ def _build_parser(cwd: Path) -> argparse.ArgumentParser:
         default=default_output,
         help="Output JSON file path",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print articles as JSON to stdout (no file write, no Rich output)",
+    )
     return parser
 
 
 def main() -> None:
-    """Run the news fetcher: load config, fetch, filter, write output."""
+    """Run the news fetcher: load config, fetch, filter, write output or print JSON."""
     cwd = Path.cwd()
     parser = _build_parser(cwd)
     args = parser.parse_args()
@@ -177,18 +150,39 @@ def main() -> None:
     config_path = args.config.resolve()
     output_file = args.output.resolve()
     output_dir = output_file.parent
-    seen_path = cwd / DEFAULT_SEEN_FILE
+    # Seen path next to config so it works when run from any cwd
+    seen_path = config_path.parent / DEFAULT_SEEN_FILE
 
-    config = load_config(config_path)
-    keywords = config["keywords"]
+    try:
+        config = load_config(config_path)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    except OSError as e:
+        console.print(f"[red]Cannot read config {config_path}: {e}[/red]")
+        sys.exit(1)
+
     sources = _filter_safe_sources(config["sources"])
-
     if not sources:
         console.print(
             "[yellow]No sources in config. Add entries under 'sources' in config.yaml.[/yellow]",
         )
         sys.exit(0)
 
+    if args.json:
+        try:
+            payload = fetch_news(config_path)
+            if not args.fresh:
+                payload = filter_already_seen_dicts(
+                    payload, seen_path, update_seen=True
+                )
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        except (FileNotFoundError, OSError) as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+        return
+
+    keywords = config["keywords"]
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -207,15 +201,14 @@ def main() -> None:
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
+        total_written = _write_output(
+            output_file,
+            payload,
+            overwrite=args.fresh,
+        )
     except OSError as e:
-        console.print(f"[red]Cannot create output directory {output_dir}: {e}[/red]")
+        console.print(f"[red]Cannot write output: {e}[/red]")
         sys.exit(1)
-
-    total_written = _write_output(
-        output_file,
-        payload,
-        overwrite=args.fresh,
-    )
 
     console.print(
         f"[green]Wrote {len(payload)} new article(s) to {output_file}[/green] "
