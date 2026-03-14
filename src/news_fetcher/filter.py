@@ -77,6 +77,32 @@ def save_seen_urls(path: Path, urls: set[str]) -> None:
         pass  # e.g. read-only filesystem; do not crash the run
 
 
+def _url_from_item(item: dict) -> str:
+    """Return normalized URL from an article dict, or empty string."""
+    return (item.get("url") or "").strip()
+
+
+def filter_already_seen_dicts(
+    articles: list[dict],
+    seen_path: Path,
+    *,
+    update_seen: bool = True,
+) -> list[dict]:
+    """
+    Return only article dicts whose URL is not in the seen set.
+    If update_seen is True, add current article URLs (verified only) to the seen file.
+    """
+    seen = load_seen_urls(seen_path)
+    new_articles = [a for a in articles if _url_from_item(a) not in seen]
+    if update_seen:
+        for a in articles:
+            url = _url_from_item(a)
+            if url and is_safe_article_url(url):
+                seen.add(url)
+        save_seen_urls(seen_path, seen)
+    return new_articles
+
+
 def filter_already_seen(
     articles: list[Article],
     seen_path: Path,
