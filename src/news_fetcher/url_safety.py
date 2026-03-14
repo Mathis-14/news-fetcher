@@ -27,13 +27,11 @@ def _host_is_blocked_name(host: str) -> bool:
     if not host:
         return True
     lower = host.lower().strip()
-    if lower in BLOCKED_HOSTNAMES:
-        return True
-    if lower.endswith(".local"):
-        return True
-    if lower.endswith(".localhost"):
-        return True
-    return False
+    return (
+        lower in BLOCKED_HOSTNAMES
+        or lower.endswith(".local")
+        or lower.endswith(".localhost")
+    )
 
 
 def _host_is_private_ip(host: str) -> bool:
