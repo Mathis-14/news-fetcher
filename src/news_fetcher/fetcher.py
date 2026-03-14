@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,7 +15,9 @@ from .url_safety import is_safe_article_url, is_safe_feed_url
 
 # Feed URLs
 GOOGLE_NEWS_RSS_BASE = "https://news.google.com/rss/search"
+GOOGLE_NEWS_ARTICLE_PREFIX = "https://news.google.com/rss/articles/"
 DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; NewsFetcher/0.1; +https://github.com/news-fetcher)"
+RESOLVE_TIMEOUT = 10.0
 
 # Feed entry keys (feedparser)
 ENTRY_LINK = "link"
@@ -80,10 +83,55 @@ def _normalize_url(entry: feedparser.FeedParserDict) -> str:
 
 
 def _html_strip(text: str) -> str:
-    """Remove simple HTML tags. Returns plain text."""
+    """Remove simple HTML tags and unescape entities (e.g. &nbsp;). Returns plain text."""
     if not text:
         return ""
-    return re.sub(r"<[^>]+>", "", text).strip()
+    stripped = re.sub(r"<[^>]+>", "", text).strip()
+    return html.unescape(stripped)
+
+
+def _is_google_news_redirect_url(url: str) -> bool:
+    """True if URL is a Google News redirect (news.google.com/.../articles/...)."""
+    return (
+        url.startswith(GOOGLE_NEWS_ARTICLE_PREFIX)
+        or "news.google.com" in url and "/articles/" in url
+    )
+
+
+def _is_consent_or_redirect(final_url: str) -> bool:
+    """True if the URL is a consent/redirect page, not a real article."""
+    lower = final_url.lower()
+    return (
+        "consent.google" in lower
+        or _is_google_news_redirect_url(final_url)
+    )
+
+
+def _resolve_google_url(url: str) -> str:
+    """
+    If url is a Google News redirect, follow it with HEAD and return the final article URL.
+    Rejects consent.google.com and other non-article redirects.
+    Returns the resolved URL if safe and not consent, else the original. On error returns original.
+    """
+    if not _is_google_news_redirect_url(url) or not is_safe_article_url(url):
+        return url
+    try:
+        with httpx.Client(
+            timeout=RESOLVE_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+        ) as client:
+            resp = client.head(url)
+            resp.raise_for_status()
+            final = str(resp.url)
+            if (
+                is_safe_article_url(final)
+                and not _is_consent_or_redirect(final)
+            ):
+                return final
+    except (httpx.HTTPError, httpx.RequestError, OSError):
+        pass
+    return url
 
 
 def _entry_to_article(
@@ -92,10 +140,14 @@ def _entry_to_article(
 ) -> Article | None:
     """
     Build an Article from a feed entry if the URL is present and safe.
+    Google News redirect URLs are resolved to the final article URL.
     Returns None if URL is missing or unsafe (caller skips).
     """
     url = _normalize_url(entry)
     if not url or not is_safe_article_url(url):
+        return None
+    url = _resolve_google_url(url)
+    if not is_safe_article_url(url):
         return None
 
     title = (entry.get(ENTRY_TITLE) or "").strip()

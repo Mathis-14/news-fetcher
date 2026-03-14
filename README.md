@@ -12,6 +12,7 @@ No API keys required — uses public RSS and Google News RSS only.
 - [Requirements](#requirements)
 - [Install](#install)
 - [Usage](#usage)
+- [Agent / Python API](#agent--python-api)
 - [Config](#config)
 - [Output](#output)
 - [Scheduling](#scheduling)
@@ -55,6 +56,26 @@ uv sync
 | `uv run news-fetcher` | Run with default `config.yaml` (append to existing output). |
 | `uv run news-fetcher --fresh` | Overwrite output and ignore `.seen_urls` history. |
 | `uv run news-fetcher --config <path> --output <path>` | Use custom config and output file. |
+| `uv run news-fetcher --json` | Print articles as JSON to stdout (no file write). Pipe-friendly for agents. |
+
+---
+
+## Agent / Python API
+
+Use the fetcher from Python (e.g. from an agent) without running the CLI:
+
+```python
+from news_fetcher import fetch_news
+
+# Returns list of dicts: title, url, source, published, description
+articles = fetch_news("config.yaml")
+for a in articles:
+    print(a["url"], a["title"])
+```
+
+- **No side effects:** `fetch_news()` does not write files or update `.seen_urls`. Raise `FileNotFoundError` or `OSError` on config errors.
+- **Google News URLs** are resolved to the final article URL when possible.
+- **CLI with stdout:** `uv run news-fetcher --json` prints the same JSON to stdout so an agent can pipe or capture it without reading a file.
 
 ---
 
