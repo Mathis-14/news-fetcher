@@ -41,3 +41,4 @@ Thumbs.db
 .coverage
 htmlcov/
 *.log
+.cursor
