@@ -1,63 +1,99 @@
 #!/usr/bin/env python3
+"""Generate a markdown report of today's news from the news SQLite DB."""
 
+from __future__ import annotations
+
+import json
+import logging
 import sqlite3
-from datetime import datetime
+from pathlib import Path
 
-# Connect to SQLite database
-conn = sqlite3.connect('news.db')
-c = conn.cursor()
+from news_db import (
+    DEFAULT_DB_PATH,
+    HIGH_IMPORTANCE_MIN,
+    NOTABLE_SCORE_MAX,
+    NOTABLE_SCORE_MIN,
+    TOP_N_HIGH,
+    TOP_N_NOTABLE,
+    get_connection,
+)
 
-# Get today's date in YYYY-MM-DD format
-today = datetime.now().strftime('%Y-%m-%d')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
-# Query for today's high-importance articles (score >= 7)
-c.execute('''
-    SELECT title, url, source, importance_score, summary, bullet_points, market_implications
-    FROM articles
-    WHERE date(published) = date('now')
-    AND importance_score >= 7
-    ORDER BY importance_score DESC
-    LIMIT 5
-''')
 
-articles = c.fetchall()
+def _parse_json_field(value: str | None) -> list[str]:
+    """Safely parse a JSON array from DB. Returns empty list on invalid or null."""
+    if not value or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+        return list(parsed) if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
 
-# Generate markdown report
-markdown_report = f"### Today's Top News ({today})\n\n"
 
-if articles:
-    markdown_report += "#### High Importance (Score ≥ 7)\n"
-    for idx, article in enumerate(articles, 1):
-        title, url, source, score, summary, bullet_points, market_implications = article
-        bullet_points = eval(bullet_points)  # Convert JSON string to list
-        market_implications = eval(market_implications) if market_implications else []
-        
-        markdown_report += f"{idx}. **{title}** ({source}, Score: {score})\n"
-        markdown_report += f"   - *Summary*: {summary}\n"
-        if market_implications:
-            markdown_report += f"   - *Market Impact*: {', '.join(market_implications)}\n"
-        markdown_report += f"   - [Read more]({url})\n\n"
-else:
-    markdown_report += "No high-importance news today.\n"
+def run_browse(db_path: Path | str | None = None) -> str:
+    """Build and return today's news report as markdown."""
+    from datetime import datetime
 
-# Query for other notable news (score 5-6)
-c.execute('''
-    SELECT title, url, source, importance_score
-    FROM articles
-    WHERE date(published) = date('now')
-    AND importance_score BETWEEN 5 AND 6
-    ORDER BY importance_score DESC
-    LIMIT 5
-''')
+    today = datetime.now().strftime("%Y-%m-%d")
 
-notable_articles = c.fetchall()
+    with get_connection(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """
+            SELECT title, url, source, importance_score, summary, bullet_points, market_implications
+            FROM articles
+            WHERE date(published) = date('now')
+            AND importance_score >= ?
+            ORDER BY importance_score DESC
+            LIMIT ?
+            """,
+            (HIGH_IMPORTANCE_MIN, TOP_N_HIGH),
+        )
+        high_rows = cur.fetchall()
 
-if notable_articles:
-    markdown_report += "\n#### Other Notable News\n"
-    for title, url, source, score in notable_articles:
-        markdown_report += f"- **{title}** ({source}, Score: {score}): [Read more]({url})\n"
+        cur = conn.execute(
+            """
+            SELECT title, url, source, importance_score
+            FROM articles
+            WHERE date(published) = date('now')
+            AND importance_score BETWEEN ? AND ?
+            ORDER BY importance_score DESC
+            LIMIT ?
+            """,
+            (NOTABLE_SCORE_MIN, NOTABLE_SCORE_MAX, TOP_N_NOTABLE),
+        )
+        notable_rows = cur.fetchall()
 
-conn.close()
+    report = f"### Today's Top News ({today})\n\n"
 
-# Print the report
-print(markdown_report)
+    if high_rows:
+        report += "#### High Importance (Score ≥ 7)\n"
+        for idx, row in enumerate(high_rows, 1):
+            bullets = _parse_json_field(row["bullet_points"])
+            implications = _parse_json_field(row["market_implications"])
+            report += f"{idx}. **{row['title']}** ({row['source']}, Score: {row['importance_score']})\n"
+            report += f"   - *Summary*: {row['summary'] or '—'}\n"
+            if implications:
+                report += f"   - *Market Impact*: {', '.join(implications)}\n"
+            report += f"   - [Read more]({row['url']})\n\n"
+    else:
+        report += "No high-importance news today.\n"
+
+    if notable_rows:
+        report += "\n#### Other Notable News\n"
+        for row in notable_rows:
+            report += f"- **{row['title']}** ({row['source']}, Score: {row['importance_score']}): [Read more]({row['url']})\n"
+
+    return report
+
+
+def main() -> None:
+    report = run_browse(DEFAULT_DB_PATH)
+    print(report)
+
+
+if __name__ == "__main__":
+    main()
