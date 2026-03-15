@@ -41,3 +41,10 @@ Thumbs.db
 .coverage
 htmlcov/
 *.log
+# Sensitive files
+news.db
+*.db
+*.sqlite
+*.pem
+.env
+*.sh
